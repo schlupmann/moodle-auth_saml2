@@ -726,6 +726,16 @@ class auth extends \auth_plugin_base {
         $USER->site = $CFG->wwwroot;
         set_moodle_cookie($USER->username);
 
+        // Backchannel soap logout : registers the  back channel logout handler
+        // and stores the moodle session_id to be able to kill it when receiving a soap logout request
+        $moodle_session_id = session_id();
+        $saml_session = \SimpleSAML\Session::getSessionFromRequest();
+        //registers SOAP logout Handler in the session
+        $saml_session->registerLogoutHandler($this->spname, '\auth_saml2\api', 'logout_from_idp_back_channel');
+        $saml_session->moodle_session_id = $moodle_session_id;
+        $saml_session_handler = \SimpleSAML\SessionHandler::getSessionHandler();
+        $saml_session_handler->saveSession($saml_session);
+
         $wantsurl = core_login_get_return_url();
         // If we are not on the page we want, then redirect to it (unless this is CLI).
         if ( qualified_me() !== false && qualified_me() !== $wantsurl ) {

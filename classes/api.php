@@ -17,7 +17,6 @@
 namespace auth_saml2;
 
 defined('MOODLE_INTERNAL') || die();
-
 use moodle_url;
 
 /**
@@ -51,6 +50,89 @@ class api {
             $DB->delete_records('sessions', array('sid' => $mdsessionid->sid));
         }
     }
+
+    /**
+     * Reads the soap message and kills the moodle sessions associated with the nameId 
+     * and the sessionIndexes
+     * 
+     * @throws \Exception
+     */
+    public static function logout_from_idp_back_channel(): void
+    {
+        $script = $_SERVER['PHP_SELF'];
+        // We only do something if we are coming from smal2-logout.php script
+        if (strpos($script, '/saml2-logout.php') === false) {
+            return;
+        }
+        $store = \SimpleSAML\Store::getInstance();
+        try {
+            $binding = \SAML2\Binding::getCurrentBinding();
+        } catch (\Exception $e) {
+            return;
+        }
+        if (get_class($binding) != 'SAML2\SOAP') { 
+            return;
+        }
+        // If we get there we have a SOAP logout request
+        $message = $binding->receive();
+        if ($message->isNameIdEncrypted()) {
+
+            // Get idpMetaData & spMetaData
+            $sourceId = substr($_SERVER['PATH_INFO'], 1);
+            /** @var \SimpleSAML\Module\saml\Auth\Source\SP $source */
+            $source = \SimpleSAML\Auth\Source::getById($sourceId, '\SimpleSAML\Module\saml\Auth\Source\SP');
+            $issuer = $message->getIssuer();
+            $spMetadata = $source->getMetadata();
+            $idpMetadata = $source->getIdPMetadata($issuer);
+
+            try {
+                $keys = \SimpleSAML\Module\saml\Message::getDecryptionKeys($idpMetadata, $spMetadata);
+            } catch (\Exception $e) {
+                throw new \SimpleSAML\Error\Exception('Error decrypting NameID: ' . $e->getMessage());
+            }
+                
+            $blacklist = \SimpleSAML\Module\saml\Message::getBlacklistedAlgorithms($idpMetadata, $spMetadata);
+
+            $lastException = null;
+            foreach ($keys as $i => $key) {
+                try {
+                    $message->decryptNameId($key, $blacklist);
+                    \SimpleSAML\Logger::debug('Decryption with key #' . $i . ' succeeded.');
+                    $lastException = null;
+                    break;
+                } catch (\Exception $e) {
+                    \SimpleSAML\Logger::debug('Decryption with key #' . $i . ' failed with exception: ' . $e->getMessage());
+                    $lastException = $e;
+                }
+            }
+            if ($lastException !== null) {
+                throw $lastException;
+            }
+        }
+
+        $nameId = $message->getNameId();
+        if (is_array($nameId)) {
+            /** @psalm-suppress UndefinedMethod */
+            $nameId = \SAML2\XML\saml\NameID::fromArray($nameId);
+        }
+        $strNameId = serialize($nameId);
+        $strNameId = sha1($strNameId);
+        $sessionIndexes = $message->getSessionIndexes();
+        // Normalize SessionIndexes
+
+        // Kills moodle session
+        foreach ($sessionIndexes as &$sessionIndex) {
+            assert(is_string($sessionIndex));
+            if (strlen($sessionIndex) > 50) {
+                $sessionIndex = sha1($sessionIndex);
+
+                $sessionId = $store->get('saml.LogoutStore', $strNameId . ':' . $sessionIndex);
+                $session = \SimpleSAML\Session::getSession($sessionId);
+                \core\session\manager::kill_session($session->moodle_session_id);
+            }
+        }
+    }
+
 
     /**
      * SP logout callback. Called in case of normal Moodle logout.
