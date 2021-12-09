@@ -62,7 +62,7 @@ function auth_saml2_get_sp_metadata() {
 
     $slosvcdefault = array(
         SAML2\Constants::BINDING_HTTP_REDIRECT,
-        // SAML2\Constants::BINDING_SOAP, // TODO untested.
+        SAML2\Constants::BINDING_SOAP,
     );
 
     $slob = $spconfig->getArray('SingleLogoutServiceBinding', $slosvcdefault);
